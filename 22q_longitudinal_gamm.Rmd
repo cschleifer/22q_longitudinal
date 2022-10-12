@@ -51,38 +51,24 @@ if(!require('rgl', quietly=TRUE)){install.packages('rgl')}
 rgl::setupKnitr()
 rgl::rgl.open(); rgl::rgl.close()
 
-
 ```
 
 ## load CAB-NP atlas
 RSN atlas of whole cortex and subcortex to use for thalamus striatum connectivity analysis. Atlas can be downloaded here: https://github.com/ColeLab/ColeAnticevicNetPartition
 load key for Ji parcels/networks
 ```{r message=FALSE,include=FALSE,warning=FALSE}
-ji_key <- read.table("/Users/charlie/Dropbox/PhD/bearden_lab/22q/analyses/striatum_thalamus_fc/ColeAnticevicNetPartition-master/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_parcels_LR_LabelKey.txt",header=T)
+ji_key <- read.table(file.path(project,"CAB-NP/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_parcels_LR_LabelKey.txt"),header=T)
 ji_net_keys <- ji_key[,c("NETWORKKEY","NETWORK")] %>% distinct %>% arrange(NETWORKKEY)
 print(ji_net_keys)
 ```
 read Ji parcellation
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 # read cifti with subcortical structures labeled 
-xii_Ji_parcel <- read_cifti("/Users/charlie/Dropbox/PhD/bearden_lab/22q/analyses/striatum_thalamus_fc/ColeAnticevicNetPartition-master/data/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_parcels_LR.dscalar.nii", brainstructures = "all")
-xii_Ji_network <- read_cifti("/Users/charlie/Dropbox/PhD/bearden_lab/22q/analyses/striatum_thalamus_fc/ColeAnticevicNetPartition-master/data/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_netassignments_LR.dscalar.nii", brainstructures = "all")
+xii_Ji_parcel <- read_cifti(file.path(project,"CAB-NP/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_parcels_LR.dscalar.nii"), brainstructures = "all")
+xii_Ji_network <- read_cifti(file.path(project,"CAB-NP/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_netassignments_LR.dscalar.nii"), brainstructures = "all")
 
 #view_xifti_volume(xii_Ji_parcel,colors="viridis",title="parcels",cex.title=1.3)
 #view_xifti_volume(xii_Ji_network,colors="Paired",title="networks",cex.title=1.3)
-```
-
-## load FC results
-set paths and get session names
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# paths to sessions directories
-trio_dir <- file.path(hoffman,"22q/qunex_studyfolder/sessions")
-prisma_dir <- file.path(hoffman,"22qPrisma/qunex_studyfolder/sessions")
-
-# get list of sessions
-trio_sessions <- list.files(trio_dir,pattern="Q_[0-9]")
-prisma_sessions <- list.files(prisma_dir,pattern="Q_[0-9]")
-all_sessions <- c(trio_sessions,prisma_sessions)
 ```
 
 ## load sistat data and get lists of scans to use
@@ -172,6 +158,209 @@ demo_summary_bl <- CreateTableOne(data=filter(demo_mri_tp_agelim, demo_mri_tp_ag
 print(demo_summary_bl)
 ```
 
+## Load individual TC connectivity CSVs
+computed by 22q_multisite_networkTC_save_individual.R and saved as a CSV with one value per network representing the z-transformed pearson correlation between signals in the thalamic and cortical subsets of that network
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# paths to sessions directories
+trio_dir <- file.path(hoffman,"22q/qunex_studyfolder/sessions")
+prisma_dir <- file.path(hoffman,"22qPrisma/qunex_studyfolder/sessions")
+
+# get list of sessions
+trio_sessions <- list.files(trio_dir,pattern="Q_[0-9]")
+prisma_sessions <- list.files(prisma_dir,pattern="Q_[0-9]")
+all_sessions <- c(trio_sessions,prisma_sessions)
+```
+
+```{r}
+# function to read between region results and add columns for roi pair name, site, and ID 
+read_tc_results <- function(sdir, fname, sesh, site){
+  input <- read.csv(file.path(sdir,sesh,"images/functional",fname))
+  session <- rep(sesh, times=nrow(input)) %>% as.data.frame
+  site <- rep(site, times=nrow(input)) %>% as.data.frame
+  new_cols <- cbind(session,site)
+  colnames(new_cols) <- c("MRI_S_ID","site")
+  output <- cbind(input,new_cols)
+  return(output)
+}
+
+# file name to look for
+tc_name <- "resting_fc_network_Thal_Cortex_Atlas_s_hpss_res-mVWMWB1d_lpss_CABNP.csv"
+
+# read for trio and prisma then combine
+trio_tc <- lapply(trio_sessions, function(s) read_tc_results(sesh=s,site="trio",sdir=trio_dir,fname=tc_name)) %>% do.call(rbind,.) %>% as.data.frame
+prisma_tc <- lapply(prisma_sessions, function(s) read_tc_results(sesh=s,site="prisma",sdir=prisma_dir,fname=tc_name)) %>% do.call(rbind,.) %>% as.data.frame
+all_tc <- rbind(trio_tc,prisma_tc) %>% filter(!is.na(TC_Fz))
+
+# replaces dashes with underscores for network names
+all_tc$NETWORK <- all_tc$NETWORK %>% gsub("-","_",.)
+
+# cast to wide for combat
+setDT(all_tc)
+all_tc_wide <- dcast(all_tc, MRI_S_ID + site ~ NETWORK, value.var="TC_Fz") 
+
+```
+
+merge TC with demo_mri
+```{r}
+demo_mri_tc <- merge(x=demo_mri_tp_agelim, y=all_tc_wide, by="MRI_S_ID")
+demo_mri_tc_hcs_del <- demo_mri_tc %>% filter(SUBJECT_IDENTITY=="CONTROL" | SUBJECT_IDENTITY =="PATIENT-DEL")
+
+# change class to factor
+demo_mri_tc_hcs_del$SUBJECT_IDENTITY <- factor(demo_mri_tc_hcs_del$SUBJECT_IDENTITY)
+demo_mri_tc_hcs_del$SUBJECTID <- factor(demo_mri_tc_hcs_del$SUBJECTID)
+demo_mri_tc_hcs_del$site <- factor(demo_mri_tc_hcs_del$site)
+demo_mri_tc_hcs_del$MRI_S_ID <- factor(demo_mri_tc_hcs_del$MRI_S_ID)
+
+
+# list of TC network names
+tc_names <- names(all_tc_wide)[which(!(names(all_tc_wide) %in% c("MRI_S_ID", "site")))]
+```
+
+## Harmonize sites
+longCombat for TC 
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+# set up longCombat variables
+demovars <- c("MRI_S_ID","SUBJECTID","site","SUBJECT_IDENTITY","AGE","SEX","visit_index")
+features <- tc_names
+idvar <- 'MRI_S_ID'
+batchvar <- 'site'
+timevar <- 'visit_index'
+formula <- 'SUBJECT_IDENTITY + AGE + SEX'
+ranef <- '(1|SUBJECTID)'
+
+combat_input_tc_hcs_del <- demo_mri_tc_hcs_del[,c(demovars,features)]
+
+# failing because Q_0381_09102019 sex not recorded
+# TEMP FIX: remove that row
+combat_input_tc_hcs_del <- combat_input_tc_hcs_del %>% filter(!is.na(SEX))
+
+# run longCombat
+tc_net_combat <- longCombat(idvar=idvar, 
+                             timevar=timevar,
+                             batchvar=batchvar, 
+                             features=features, 
+                             formula=formula,
+                             ranef=ranef,
+                             data=combat_input_tc_hcs_del)
+
+# get the harmonized data
+tc_net_combat_data <- tc_net_combat$data_combat
+
+# merge combat back with original
+demo_mri_tc_hcs_del_combat <- merge(x=demo_mri_tc_hcs_del, y=tc_net_combat_data, by=c("MRI_S_ID","visit_index","site"))
+
+```
+function to get smoothed estimates with upper and lower SE bounds
+```{r}
+smooth_estimates_se <- function(gamm,smooth,n){
+  out <- smooth_estimates(gamm,smooth,n=n, partial_match = T)
+  out$selo <- out$est - out$se
+  out$sehi <- out$est + out$se
+  return(out)
+}
+
+# get smooth estimates shifted by GAMM intercept to allow plotting over original data
+smooth_estimates_se_b0 <- function(gamm,smooth,n){
+  out <- smooth_estimates(gamm,smooth,n=n, partial_match = T)
+  out$est <- out$est + gamm$coefficients["(Intercept)"]
+  out$selo <- out$est - out$se
+  out$sehi <- out$est + out$se
+  return(out)
+}
+```
+
+GAMM for harmonized TC
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# combat feature names
+tc_names_combat <- paste(tc_names,".combat",sep="")
+
+# generalized additive mixed model
+gamm_tc_all_combat <- lapply(tc_names_combat,function(name) gam(reformulate(c("s(AGE,by=SUBJECT_IDENTITY)","SUBJECT_IDENTITY","SEX","s(SUBJECTID, bs=\"re\")"), response=name),selection=TRUE,method="REML",data=demo_mri_tc_hcs_del_combat))
+names(gamm_tc_all_combat) <- tc_names_combat
+
+# smooth estimate
+smove_tc_all_combat <- lapply(gamm_tc_all_combat, function(g) smooth_estimates_se_b0(gamm=g, smooth="s(AGE)", n=(40*12)))
+names(smove_tc_all_combat) <- tc_names_combat
+
+```
+
+plot all TC smooths
+```{r}
+# function to plot gamm and scatter
+plot_gamm_points_tc_combat <- function(name){
+  ggplot(data = smove_tc_all_combat[[name]],  aes_string(x="AGE", y="est"))+
+  geom_ribbon(aes_string(x = "AGE", ymin = "selo",ymax = "sehi", fill = "SUBJECT_IDENTITY"),alpha = .18, linetype = 0)+
+  geom_line(aes_string(x = "AGE", y = "est", color = "SUBJECT_IDENTITY"),size = 1)+theme_bw()+
+  theme_classic() + 
+  theme(legend.title = element_blank())+
+  ylab(paste("Mean",name))+
+  ggtitle(paste(name,"Thalamocortical GAMM"))+
+  scale_fill_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
+  scale_color_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
+  geom_point(data=demo_mri_tc_hcs_del_combat, aes_string(x="AGE", y=name, color="SUBJECT_IDENTITY", fill="SUBJECT_IDENTITY",shape="site")) +
+  scale_shape_manual(values = c(17, 16)) 
+}
+
+lapply(tc_names_combat,function(x) plot_gamm_points_tc_combat(x))
+```
+plot three favorites
+```{r}
+plot_gamm_points_tc_combat_ylab <- function(name){
+  ggplot(data = smove_tc_all_combat[[name]],  aes_string(x="AGE", y="est"))+
+  geom_ribbon(aes_string(x = "AGE", ymin = "selo",ymax = "sehi", fill = "SUBJECT_IDENTITY"),alpha = .18, linetype = 0)+
+  geom_line(aes_string(x = "AGE", y = "est", color = "SUBJECT_IDENTITY"),size = 1)+theme_bw()+
+  theme_classic() + 
+  theme(legend.title = element_blank())+
+  ylab("Thalamocortical connectivity (mean Fz)")+
+  ylim(-1,1)+
+  ggtitle(sub(".combat","",name))+
+  theme(plot.title = element_text(vjust=-6, hjust=0.1))+
+  scale_fill_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
+  scale_color_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
+  geom_point(data=demo_mri_tc_hcs_del_combat, aes_string(x="AGE", y=name, color="SUBJECT_IDENTITY", fill="SUBJECT_IDENTITY",shape="site")) +
+  scale_shape_manual(values = c(17, 16)) 
+}
+
+plot_gamm_points_tc_combat_noylab <- function(name){
+  ggplot(data = smove_tc_all_combat[[name]],  aes_string(x="AGE", y="est"))+
+  geom_ribbon(aes_string(x = "AGE", ymin = "selo",ymax = "sehi", fill = "SUBJECT_IDENTITY"),alpha = .18, linetype = 0)+
+  geom_line(aes_string(x = "AGE", y = "est", color = "SUBJECT_IDENTITY"),size = 1)+theme_bw()+
+  theme_classic() + 
+  theme(legend.title = element_blank(),axis.title.y=element_blank())+
+  theme(legend.title = element_blank(),axis.text.y=element_blank(),axis.title.y=element_blank())+
+  ylim(-1,1)+
+  ggtitle(sub(".combat","",name))+
+  theme(plot.title = element_text(vjust=-6, hjust=0.1))+
+  scale_fill_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
+  scale_color_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
+  geom_point(data=demo_mri_tc_hcs_del_combat, aes_string(x="AGE", y=name, color="SUBJECT_IDENTITY", fill="SUBJECT_IDENTITY",shape="site")) +
+  scale_shape_manual(values = c(17, 16)) 
+}
+p1 <- plot_gamm_points_tc_combat_ylab("Frontoparietal.combat")
+p23 <- lapply(c("Somatomotor.combat","Default.combat"),function(x) plot_gamm_points_tc_combat_noylab(x))
+#grid.arrange(p3[[1]],p3[[2]],p3[[3]],nrow=1)
+
+#ggarange not displaying in rmd but works if pasted into console
+pf <- ggarrange(p1,p23[[1]],p23[[2]],nrow=1, common.legend=T,legend="right")
+#ggsave("~/Dropbox/PhD/bearden_lab/22q/analyses/longitudinal_gamm/tc_plots_som_fpn_dmn.png", device="png",width=13 ,height=4, units="in", dpi = 100, plot=pf)
+```
+
+p-vals for significant age effect by group
+```{r}
+summary(gamm_tc_all_combat[[which(tc_names_combat == "Somatomotor.combat")]], freq=T)$s.table
+
+summary(gamm_tc_all_combat[[which(tc_names_combat == "Frontoparietal.combat")]], freq=T)$s.table
+
+```
+
+
+
+
+
+
+
+
+############### unused
 merge gbc results with demo_mri
 ```{r}
 #demo_mri_gbc <- merge(x=demo_mri_tp_agelim, y=df_gbc_mean, by.x="MRI_S_ID", by.y="session")
@@ -400,188 +589,6 @@ lapply(all_names,function(x) plot_gamm_points_combat(x))
 ```
 
 
-## Load individual TC connectivity CSVs
-computed by 22q_multisite_networkTC_save_individual.R and saved as a CSV with one value per network representing the z-transformed pearson correlation between signals in the thalamic and cortical subsets of that network
-```{r}
-# function to read between region results and add columns for roi pair name, site, and ID 
-read_tc_results <- function(sdir, fname, sesh, site){
-  input <- read.csv(file.path(sdir,sesh,"images/functional",fname))
-  session <- rep(sesh, times=nrow(input)) %>% as.data.frame
-  site <- rep(site, times=nrow(input)) %>% as.data.frame
-  new_cols <- cbind(session,site)
-  colnames(new_cols) <- c("MRI_S_ID","site")
-  output <- cbind(input,new_cols)
-  return(output)
-}
-
-# file name to look for
-tc_name <- "resting_fc_network_Thal_Cortex_Atlas_s_hpss_res-mVWMWB1d_lpss_CABNP.csv"
-
-# read for trio and prisma then combine
-trio_tc <- lapply(trio_sessions, function(s) read_tc_results(sesh=s,site="trio",sdir=trio_dir,fname=tc_name)) %>% do.call(rbind,.) %>% as.data.frame
-prisma_tc <- lapply(prisma_sessions, function(s) read_tc_results(sesh=s,site="prisma",sdir=prisma_dir,fname=tc_name)) %>% do.call(rbind,.) %>% as.data.frame
-all_tc <- rbind(trio_tc,prisma_tc) %>% filter(!is.na(TC_Fz))
-
-# replaces dashes with underscores for network names
-all_tc$NETWORK <- all_tc$NETWORK %>% gsub("-","_",.)
-
-# cast to wide for combat
-setDT(all_tc)
-all_tc_wide <- dcast(all_tc, MRI_S_ID + site ~ NETWORK, value.var="TC_Fz") 
-
-```
-
-merge TC with demo_mri
-```{r}
-demo_mri_tc <- merge(x=demo_mri_tp_agelim, y=all_tc_wide, by="MRI_S_ID")
-demo_mri_tc_hcs_del <- demo_mri_tc %>% filter(SUBJECT_IDENTITY=="CONTROL" | SUBJECT_IDENTITY =="PATIENT-DEL")
-
-# change class to factor
-demo_mri_tc_hcs_del$SUBJECT_IDENTITY <- factor(demo_mri_tc_hcs_del$SUBJECT_IDENTITY)
-demo_mri_tc_hcs_del$SUBJECTID <- factor(demo_mri_tc_hcs_del$SUBJECTID)
-demo_mri_tc_hcs_del$site <- factor(demo_mri_tc_hcs_del$site)
-demo_mri_tc_hcs_del$MRI_S_ID <- factor(demo_mri_tc_hcs_del$MRI_S_ID)
-
-
-# list of TC network names
-tc_names <- names(all_tc_wide)[which(!(names(all_tc_wide) %in% c("MRI_S_ID", "site")))]
-```
-
-longCombat for TC 
-```{r message=FALSE, warning=FALSE, paged.print=FALSE}
-# set up longCombat variables
-demovars <- c("MRI_S_ID","SUBJECTID","site","SUBJECT_IDENTITY","AGE","SEX","visit_index")
-features <- tc_names
-idvar <- 'MRI_S_ID'
-batchvar <- 'site'
-timevar <- 'visit_index'
-formula <- 'SUBJECT_IDENTITY + AGE + SEX'
-ranef <- '(1|SUBJECTID)'
-
-combat_input_tc_hcs_del <- demo_mri_tc_hcs_del[,c(demovars,features)]
-
-# failing because Q_0381_09102019 sex not recorded
-# TEMP FIX: remove that row
-combat_input_tc_hcs_del <- combat_input_tc_hcs_del %>% filter(!is.na(SEX))
-
-# run longCombat
-tc_net_combat <- longCombat(idvar=idvar, 
-                             timevar=timevar,
-                             batchvar=batchvar, 
-                             features=features, 
-                             formula=formula,
-                             ranef=ranef,
-                             data=combat_input_tc_hcs_del)
-
-# get the harmonized data
-tc_net_combat_data <- tc_net_combat$data_combat
-
-# merge combat back with original
-demo_mri_tc_hcs_del_combat <- merge(x=demo_mri_tc_hcs_del, y=tc_net_combat_data, by=c("MRI_S_ID","visit_index","site"))
-
-```
-function to get smoothed estimates with upper and lower SE bounds
-```{r}
-smooth_estimates_se <- function(gamm,smooth,n){
-  out <- smooth_estimates(gamm,smooth,n=n, partial_match = T)
-  out$selo <- out$est - out$se
-  out$sehi <- out$est + out$se
-  return(out)
-}
-
-# get smooth estimates shifted by GAMM intercept to allow plotting over original data
-smooth_estimates_se_b0 <- function(gamm,smooth,n){
-  out <- smooth_estimates(gamm,smooth,n=n, partial_match = T)
-  out$est <- out$est + gamm$coefficients["(Intercept)"]
-  out$selo <- out$est - out$se
-  out$sehi <- out$est + out$se
-  return(out)
-}
-```
-
-GAMM for harmonized TC
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# combat feature names
-tc_names_combat <- paste(tc_names,".combat",sep="")
-
-# generalized additive mixed model
-gamm_tc_all_combat <- lapply(tc_names_combat,function(name) gam(reformulate(c("s(AGE,by=SUBJECT_IDENTITY)","SUBJECT_IDENTITY","SEX","s(SUBJECTID, bs=\"re\")"), response=name),selection=TRUE,method="REML",data=demo_mri_tc_hcs_del_combat))
-names(gamm_tc_all_combat) <- tc_names_combat
-
-# smooth estimate
-smove_tc_all_combat <- lapply(gamm_tc_all_combat, function(g) smooth_estimates_se_b0(gamm=g, smooth="s(AGE)", n=(40*12)))
-names(smove_tc_all_combat) <- tc_names_combat
-
-```
-
-plot all TC smooths
-```{r}
-# function to plot gamm and scatter
-plot_gamm_points_tc_combat <- function(name){
-  ggplot(data = smove_tc_all_combat[[name]],  aes_string(x="AGE", y="est"))+
-  geom_ribbon(aes_string(x = "AGE", ymin = "selo",ymax = "sehi", fill = "SUBJECT_IDENTITY"),alpha = .18, linetype = 0)+
-  geom_line(aes_string(x = "AGE", y = "est", color = "SUBJECT_IDENTITY"),size = 1)+theme_bw()+
-  theme_classic() + 
-  theme(legend.title = element_blank())+
-  ylab(paste("Mean",name))+
-  ggtitle(paste(name,"Thalamocortical GAMM"))+
-  scale_fill_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
-  scale_color_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
-  geom_point(data=demo_mri_tc_hcs_del_combat, aes_string(x="AGE", y=name, color="SUBJECT_IDENTITY", fill="SUBJECT_IDENTITY",shape="site")) +
-  scale_shape_manual(values = c(17, 16)) 
-}
-
-lapply(tc_names_combat,function(x) plot_gamm_points_tc_combat(x))
-```
-plot three favorites
-```{r}
-plot_gamm_points_tc_combat_ylab <- function(name){
-  ggplot(data = smove_tc_all_combat[[name]],  aes_string(x="AGE", y="est"))+
-  geom_ribbon(aes_string(x = "AGE", ymin = "selo",ymax = "sehi", fill = "SUBJECT_IDENTITY"),alpha = .18, linetype = 0)+
-  geom_line(aes_string(x = "AGE", y = "est", color = "SUBJECT_IDENTITY"),size = 1)+theme_bw()+
-  theme_classic() + 
-  theme(legend.title = element_blank())+
-  ylab("Thalamocortical connectivity (mean Fz)")+
-  ylim(-1,1)+
-  ggtitle(sub(".combat","",name))+
-  theme(plot.title = element_text(vjust=-6, hjust=0.1))+
-  scale_fill_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
-  scale_color_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
-  geom_point(data=demo_mri_tc_hcs_del_combat, aes_string(x="AGE", y=name, color="SUBJECT_IDENTITY", fill="SUBJECT_IDENTITY",shape="site")) +
-  scale_shape_manual(values = c(17, 16)) 
-}
-
-plot_gamm_points_tc_combat_noylab <- function(name){
-  ggplot(data = smove_tc_all_combat[[name]],  aes_string(x="AGE", y="est"))+
-  geom_ribbon(aes_string(x = "AGE", ymin = "selo",ymax = "sehi", fill = "SUBJECT_IDENTITY"),alpha = .18, linetype = 0)+
-  geom_line(aes_string(x = "AGE", y = "est", color = "SUBJECT_IDENTITY"),size = 1)+theme_bw()+
-  theme_classic() + 
-  theme(legend.title = element_blank(),axis.title.y=element_blank())+
-  theme(legend.title = element_blank(),axis.text.y=element_blank(),axis.title.y=element_blank())+
-  ylim(-1,1)+
-  ggtitle(sub(".combat","",name))+
-  theme(plot.title = element_text(vjust=-6, hjust=0.1))+
-  scale_fill_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
-  scale_color_manual(values = c("CONTROL" = "deepskyblue", "PATIENT-DEL" = "red")) +
-  geom_point(data=demo_mri_tc_hcs_del_combat, aes_string(x="AGE", y=name, color="SUBJECT_IDENTITY", fill="SUBJECT_IDENTITY",shape="site")) +
-  scale_shape_manual(values = c(17, 16)) 
-}
-p1 <- plot_gamm_points_tc_combat_ylab("Frontoparietal.combat")
-p23 <- lapply(c("Somatomotor.combat","Default.combat"),function(x) plot_gamm_points_tc_combat_noylab(x))
-#grid.arrange(p3[[1]],p3[[2]],p3[[3]],nrow=1)
-
-#ggarange not displaying in rmd but works if pasted into console
-pf <- ggarrange(p1,p23[[1]],p23[[2]],nrow=1, common.legend=T,legend="right")
-#ggsave("~/Dropbox/PhD/bearden_lab/22q/analyses/longitudinal_gamm/tc_plots_som_fpn_dmn.png", device="png",width=13 ,height=4, units="in", dpi = 100, plot=pf)
-```
-
-p-vals for significant age effect by group
-```{r}
-summary(gamm_tc_all_combat[[which(tc_names_combat == "Somatomotor.combat")]], freq=T)$s.table
-
-summary(gamm_tc_all_combat[[which(tc_names_combat == "Frontoparietal.combat")]], freq=T)$s.table
-
-```
 
 Repicate Maria's analysis of periods of significant age change based on derivatives
 https://github.com/pittnerdlab/22q11_longitudinal_cortical_sMRI/blob/main/01a_age_effects.Rmd
