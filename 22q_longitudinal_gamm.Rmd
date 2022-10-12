@@ -7,230 +7,82 @@ output: html_document
 ## Overview
 
 
-## Install and set up packages
+## Set up workspace
 ciftiTools is an R package for analysis and plotting of CIFTI dscalar, dlabel, and dtseries files:
 https://htmlpreview.github.io/?https://github.com/mandymejia/ciftiTools/blob/master/vignettes/ciftiTools_vignette.html
 many ciftiTools functions require connectome workbench to be downloaded and installed locally:
 https://www.humanconnectome.org/software/get-connectome-workbench
 ```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# clear environment
+# clear workspace
 rm(list = ls(all.names = TRUE))
 
-# set up hoffman path
-hoffman <- "~/Desktop/hoffman_mount/"
+# list packages to load
+packages <- c("conflicted","here","mgcv", "gratia", "longCombat", "lme4","lmerTest", "invgamma", "ciftiTools", "dplyr", "magrittr", "DescTools", "parallel", "tableone", "viridis", "ggplot2", "tibble", "scico", "reshape2", "data.table","readxl","gridExtra","ggpubr")
 
-# install longCombat with devtools
-#devtools::install_github("jcbeer/longCombat")
-
-# list of packages to load
-packages <- c("mgcv", "gratia", "longCombat", "lme4","lmerTest", "invgamma", "ciftiTools", "dplyr", "magrittr", "DescTools", "parallel", "tableone", "viridis", "ggplot2", "tibble", "scico", "reshape2", "data.table","readxl","gridExtra","ggpubr")
-
-# Install packages not yet installed
-# Note: ciftiTools install fails if R is started without enough memory
+# install packages if not yet installed
+# note: ciftiTools install fails if R is started without enough memory on cluster (try 16G)
 installed_packages <- packages %in% rownames(installed.packages())
-# comment out line below to skip install
 if (any(installed_packages == FALSE)) {install.packages(packages[!installed_packages])}
 
-# Packages loading
+# load packages
 invisible(lapply(packages, library, character.only = TRUE))
 
-# set up workbench path
-# on hoffman: /u/project/CCN/apps/hcp/current/workbench/bin_rh_linux64/
+# use the filter function from dplyr, not stats
+conflict_prefer("filter", "dplyr")
+
+# get path to project repo directory
+project <- here()
+print(paste("Project directory:", project))
+
+# set up connectome workbench path for ciftiTools
+# https://www.humanconnectome.org/software/get-connectome-workbench
+# local wbpath (edit this path if workbench is installed in another location, e.g. on hoffman: /u/project/CCN/apps/hcp/current/workbench/bin_rh_linux64/)
+# TODO: edit if necessary
 wbpath <- "/Applications/workbench/bin_macosx64/"
 ciftiTools.setOption("wb_path", wbpath)
 
-# load rgl for ciftitools visualization
+# set local path to SSHFS mount point for hoffman:/u/project/cbearden/data
+# TODO: edit if necessary
+hoffman <- "~/Desktop/hoffman_mount/"
+
+# load rgl for ciftiTools visualization
 # may require XQartz v2.8.1 to be installed locally
 if(!require('rgl', quietly=TRUE)){install.packages('rgl')}
 rgl::setupKnitr()
 rgl::rgl.open(); rgl::rgl.close()
 
-```
-
-```{r}
-# function to print path for each cifti being read
-read_cifti_print <- function(path){
-  print(path)
-  out <- read_cifti(path,brainstructures="all")
-  return(out)
-}
-```
-
-## load FC results
-load trio GBC results
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-## paths to sessions directories
-#trio_dir <- file.path(hoffman,"22q/qunex_studyfolder/sessions")
-#
-## get list of sessions
-#trio_sessions <- list.files(trio_dir,pattern="Q_[0-9]")
-#
-#gbc_name <- "resting_fc_gbc_s_hpss_res-mVWMWB1d_lpss_gbc_mFz_0.dtseries.nii"
-#
-## read gbc results
-#trio_gbc <- lapply(trio_sessions, function(s)  read_cifti(file.path(trio_dir,s,"images/functional/",gbc_name),brainstructures="all"))
-```
-
-get vector of average gbc for each session
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-#trio_gbc_mean <- lapply(trio_gbc, function(g) mean(as.matrix(g))) %>% do.call(rbind,.) %>% as.data.frame
-#df_gbc_mean <- cbind(as.data.frame(trio_sessions),trio_gbc_mean)
-#colnames(df_gbc_mean) <- c("session","wb_gbc_mean")
-#
-```
-
-load trio thal FC results
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# paths to sessions directories
-trio_dir <- file.path(hoffman,"22q/qunex_studyfolder/sessions")
-
-# get list of sessions
-trio_sessions <- list.files(trio_dir,pattern="Q_[0-9]")
-```
-
-```{r}
-thal_name <- "resting_fc_seed_s_hpss_res-mVWMWB1d_lpss_LR-Thal-CIFTI_all_Fz.dtseries.nii"
-
-trio_thal <- lapply(trio_sessions, function(s)  read_cifti_print(file.path(trio_dir,s,"images/functional/",thal_name)))
 
 ```
 
-
-load trio hipp FC results
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# paths to sessions directories
-trio_dir <- file.path(hoffman,"22q/qunex_studyfolder/sessions")
-
-# get list of sessions
-trio_sessions <- list.files(trio_dir,pattern="Q_[0-9]")
-
-hipp_name <- "resting_fc_seed_s_hpss_res-mVWMWB1d_lpss_LR-Hipp-CIFTI_all_Fz.dtseries.nii"
-
-trio_hipp <- lapply(trio_sessions, function(s)  read_cifti_print(file.path(trio_dir,s,"images/functional/",hipp_name)))
-
-```
-
-
-load prisma thal FC results
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# paths to sessions directories
-prisma_dir <- file.path(hoffman,"22qPrisma/qunex_studyfolder/sessions")
-
-# get list of sessions
-prisma_sessions <- list.files(prisma_dir,pattern="Q_[0-9]")
-```
-
-```{r}
-prisma_thal_name <- "resting1_fc_seed_s_hpss_res-mVWMWB1d_lpss_LR-Thal-CIFTI_all_Fz.dtseries.nii"
-
-prisma_thal <- lapply(prisma_sessions, function(s)  read_cifti_print(file.path(prisma_dir,s,"images/functional/",prisma_thal_name)))
-
-```
-
-load prisma hipp FC results
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# paths to sessions directories
-prisma_dir <- file.path(hoffman,"22qPrisma/qunex_studyfolder/sessions")
-
-# get list of sessions
-prisma_sessions <- list.files(prisma_dir,pattern="Q_[0-9]")
-
-prisma_hipp_name <- "resting1_fc_seed_s_hpss_res-mVWMWB1d_lpss_LR-Hipp-CIFTI_all_Fz.dtseries.nii"
-
-prisma_hipp <- lapply(prisma_sessions, function(s)  read_cifti_print(file.path(prisma_dir,s,"images/functional/",prisma_hipp_name)))
-
-```
-
-combine trio and prisma lists
-```{r}
-all_thal <- c(trio_thal,prisma_thal)
-all_hipp <- c(trio_hipp,prisma_hipp)
-```
-
-```{r}
-all_sessions <- c(trio_sessions,prisma_sessions)
-```
-
-
-
-## Ji (Anticevic Cole) network parcellation
+## load CAB-NP atlas
 RSN atlas of whole cortex and subcortex to use for thalamus striatum connectivity analysis. Atlas can be downloaded here: https://github.com/ColeLab/ColeAnticevicNetPartition
 load key for Ji parcels/networks
 ```{r message=FALSE,include=FALSE,warning=FALSE}
 ji_key <- read.table("/Users/charlie/Dropbox/PhD/bearden_lab/22q/analyses/striatum_thalamus_fc/ColeAnticevicNetPartition-master/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_parcels_LR_LabelKey.txt",header=T)
 ji_net_keys <- ji_key[,c("NETWORKKEY","NETWORK")] %>% distinct %>% arrange(NETWORKKEY)
-```
-
-```{r}
 print(ji_net_keys)
 ```
-
 read Ji parcellation
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 # read cifti with subcortical structures labeled 
 xii_Ji_parcel <- read_cifti("/Users/charlie/Dropbox/PhD/bearden_lab/22q/analyses/striatum_thalamus_fc/ColeAnticevicNetPartition-master/data/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_parcels_LR.dscalar.nii", brainstructures = "all")
 xii_Ji_network <- read_cifti("/Users/charlie/Dropbox/PhD/bearden_lab/22q/analyses/striatum_thalamus_fc/ColeAnticevicNetPartition-master/data/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_netassignments_LR.dscalar.nii", brainstructures = "all")
 
-view_xifti_volume(xii_Ji_parcel,colors="viridis",title="parcels",cex.title=1.3)
-view_xifti_volume(xii_Ji_network,colors="Paired",title="networks",cex.title=1.3)
+#view_xifti_volume(xii_Ji_parcel,colors="viridis",title="parcels",cex.title=1.3)
+#view_xifti_volume(xii_Ji_network,colors="Paired",title="networks",cex.title=1.3)
 ```
 
-function to extract average value in roi
-```{r message=FALSE, warning=FALSE, paged.print=FALSE}
-extract_mask_mean_wb <- function(xii_target, xii_mask, mask_vals){
-  inds <- which(as.matrix(xii_mask) %in% mask_vals)
-  ext <- as.matrix(xii_target)[inds]
-  out <- mean(ext)
-  return(out)
-}
-
-extract_mask_mean_cortex <- function(xii_target, xii_mask, mask_vals){
-  indsl <- which(as.matrix(xii_mask$data$cortex_left) %in% mask_vals)
-  indsr <- which(as.matrix(xii_mask$data$cortex_right) %in% mask_vals)
-  extl <- as.matrix(xii_target$data$cortex_left)[indsl]
-  extr <- as.matrix(xii_target$data$cortex_right)[indsr]
-  ext <- c(extl,extr)
-  out <- mean(ext)
-  return(out)
-}
-
-```
-
-
-extract thal to network FC for all networks
+## load FC results
+set paths and get session names
 ```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# cortex only
-#thal_nets_cortex <- lapply(1:nrow(ji_net_keys), function(r) lapply(trio_thal, function(g) extract_mask_mean_cortex(xii_target=g, xii_mask=xii_Ji_network, mask_vals=ji_net_keys$NETWORKKEY[r])) %>% do.call(rbind,.) %>% as.data.frame) %>% do.call(cbind,.) %>% as.data.frame
+# paths to sessions directories
+trio_dir <- file.path(hoffman,"22q/qunex_studyfolder/sessions")
+prisma_dir <- file.path(hoffman,"22qPrisma/qunex_studyfolder/sessions")
 
-#names(thal_nets_cortex) <- paste("thal_",(lapply(ji_net_keys$NETWORK,function(x) sub("-","_",x)) %>% do.call(rbind,.)), "_cortex", sep="")
-
-# whole-brain
-#thal_nets_wb <- lapply(1:nrow(ji_net_keys), function(r) lapply(trio_thal, function(g) extract_mask_mean_wb(xii_target=g, xii_mask=xii_Ji_network, mask_vals=ji_net_keys$NETWORKKEY[r])) %>% do.call(rbind,.) %>% as.data.frame) %>% do.call(cbind,.) %>% as.data.frame
-thal_nets_wb <- lapply(1:nrow(ji_net_keys), function(r) lapply(all_thal, function(g) extract_mask_mean_wb(xii_target=g, xii_mask=xii_Ji_network, mask_vals=ji_net_keys$NETWORKKEY[r])) %>% do.call(rbind,.) %>% as.data.frame) %>% do.call(cbind,.) %>% as.data.frame
-
-names(thal_nets_wb) <- paste("thal_",(lapply(ji_net_keys$NETWORK,function(x) sub("-","_",x)) %>% do.call(rbind,.)), "_wb", sep="")
-
-#df_thal_fc <- cbind(thal_nets_cortex, thal_nets_wb)
-df_thal_fc <-  thal_nets_wb
-
-#df_thal_fc$session <- trio_sessions
-df_thal_fc$session <- all_sessions
-
-```
-
-
-extract hipp to network FC for all networks
-```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
-# whole-brain
-#hipp_nets_wb <- lapply(1:nrow(ji_net_keys), function(r) lapply(trio_hipp, function(g) extract_mask_mean_wb(xii_target=g, xii_mask=xii_Ji_network, mask_vals=ji_net_keys$NETWORKKEY[r])) %>% do.call(rbind,.) %>% as.data.frame) %>% do.call(cbind,.) %>% as.data.frame
-hipp_nets_wb <- lapply(1:nrow(ji_net_keys), function(r) lapply(all_hipp, function(g) extract_mask_mean_wb(xii_target=g, xii_mask=xii_Ji_network, mask_vals=ji_net_keys$NETWORKKEY[r])) %>% do.call(rbind,.) %>% as.data.frame) %>% do.call(cbind,.) %>% as.data.frame
-
-names(hipp_nets_wb) <- paste("hipp_",(lapply(ji_net_keys$NETWORK,function(x) sub("-","_",x)) %>% do.call(rbind,.)), "_wb", sep="")
-
-#df_thal_fc <- cbind(thal_nets_cortex, thal_nets_wb)
-df_thal_hipp_fc <-  cbind(df_thal_fc,hipp_nets_wb)
-
-
+# get list of sessions
+trio_sessions <- list.files(trio_dir,pattern="Q_[0-9]")
+prisma_sessions <- list.files(prisma_dir,pattern="Q_[0-9]")
+all_sessions <- c(trio_sessions,prisma_sessions)
 ```
 
 ## load sistat data and get lists of scans to use
