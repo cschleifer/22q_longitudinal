@@ -1,5 +1,5 @@
 # 22q_longitudinal
-Analyses of age-related trajectories for functional network connectivity in 22qDel and typical controls. 
+Analysis of age-related trajectories for functional network connectivity in 22qDel and typical controls. 
 
 ## Overview
 
