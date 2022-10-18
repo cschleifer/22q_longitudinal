@@ -16,6 +16,18 @@ https://www.humanconnectome.org/software/get-connectome-workbench
 # clear workspace
 rm(list = ls(all.names = TRUE))
 
+# use SSHFS to mount hoffman2 server (download SSHFS for mac: https://osxfuse.github.io/)
+# TODO: set hoffman2 username
+uname <- "schleife"
+# set local path to mount server
+hoffman <- "~/Desktop/hoffman_mount"
+# create directory if needed 
+if(!file.exists(hoffman)){dir.create(hoffman)}
+# system command to run
+mntcommand <- paste0("sshfs ",uname,"@hoffman2.idre.ucla.edu:/u/project/cbearden/data ",hoffman)
+# mount hoffman2 via SSHFS
+system(mntcommand)
+
 # list packages to load
 packages <- c("conflicted", "here", "magrittr", "mgcv", "gratia", "lme4", "lmerTest", "invgamma", "longCombat", "ciftiTools", "readxl", "dplyr", "data.table", "DescTools","tableone", "tibble", "reshape2", "viridis", "scico", "ggplot2", "gridExtra", "ggpubr")
 
@@ -41,10 +53,6 @@ print(paste("Project directory:", project))
 # TODO: edit if necessary
 wbpath <- "/Applications/workbench/bin_macosx64/"
 ciftiTools.setOption("wb_path", wbpath)
-
-# set local path to SSHFS mount point for hoffman:/u/project/cbearden/data
-# TODO: edit if necessary
-hoffman <- "~/Desktop/hoffman_mount/"
 
 # load rgl for ciftiTools visualization
 # may require XQartz v2.8.1 to be installed locally
