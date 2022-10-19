@@ -353,8 +353,9 @@ pf <- ggarrange(p1,p23[[1]],p23[[2]],nrow=1, common.legend=T,legend="right")
 
 p-vals for significant age effect by group
 ```{r}
+print("Somatomotor.combat")
 summary(gamm_tc_all_combat[[which(tc_names_combat == "Somatomotor.combat")]], freq=T)$s.table
-
+print("Frontoparietal.combat")
 summary(gamm_tc_all_combat[[which(tc_names_combat == "Frontoparietal.combat")]], freq=T)$s.table
 
 ```
@@ -391,6 +392,16 @@ plot_gamm_points_tc_trio <- function(name){
 
 lapply(tc_names,function(x) plot_gamm_points_tc_trio(x))
 ```
+p-vals for trio only
+```{r}
+print("Somatomotor")
+summary(gamm_tc_trio[[which(tc_names == "Somatomotor")]], freq=T)$s.table
+
+print("Frontoparietal")
+summary(gamm_tc_trio[[which(tc_names == "Frontoparietal")]], freq=T)$s.table
+
+```
+
 
 GAMM for prisma only (no combat)
 ```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
