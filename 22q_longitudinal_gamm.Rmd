@@ -24,7 +24,7 @@ hoffman <- "~/Desktop/hoffman_mount"
 # create directory if needed 
 if(!file.exists(hoffman)){dir.create(hoffman)}
 # make string to run as system command
-mntcommand <- paste0("sshfs ",uname,"@hoffman2.idre.ucla.edu:/u/project/cbearden/data ",hoffman)
+mntcommand <- paste0("umount -f ", hoffman,"; sshfs ",uname,"@hoffman2.idre.ucla.edu:/u/project/cbearden/data ",hoffman)
 # if hoffman directory is empty, use system command and sshfs to mount server, if not empty assume already mounted and skip
 if(length(list.files(hoffman)) == 0){system(mntcommand)}else{print(paste(hoffman,"is not empty...skipping SSHFS step"))}
 
