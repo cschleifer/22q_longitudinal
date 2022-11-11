@@ -1,0 +1,335 @@
+---
+title: "test TCC between sites"
+author: "charlie schleifer"
+date: "11/10/2022"
+output: html_document
+---
+## Overview
+This script uses Generalized Additive Mixed Models (GAMMs) to model non-parametric age trajectories for thalamocortical functional network connectivity in 22qDel patiens and typical controls. A random effects implementation of the ComBat algorithm (longCombat) is used to harmonize data from multiple sites.  
+
+## Set up workspace
+ciftiTools is an R package for analysis and plotting of CIFTI dscalar, dlabel, and dtseries files:
+https://htmlpreview.github.io/?https://github.com/mandymejia/ciftiTools/blob/master/vignettes/ciftiTools_vignette.html
+many ciftiTools functions require connectome workbench to be downloaded and installed locally:
+https://www.humanconnectome.org/software/get-connectome-workbench
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# clear workspace
+rm(list = ls(all.names = TRUE))
+
+# use SSHFS to mount hoffman2 server (download SSHFS for mac: https://osxfuse.github.io/)
+# TODO: set hoffman2 username
+uname <- "schleife"
+# set local path to mount server
+hoffman <- "~/Desktop/hoffman_mount"
+# create directory if needed 
+if(!file.exists(hoffman)){dir.create(hoffman)}
+# make string to run as system command
+mntcommand <- paste0("umount -f ", hoffman,"; sshfs ",uname,"@hoffman2.idre.ucla.edu:/u/project/cbearden/data ",hoffman)
+# if hoffman directory is empty, use system command and sshfs to mount server, if not empty assume already mounted and skip
+if(length(list.files(hoffman)) == 0){system(mntcommand)}else{print(paste(hoffman,"is not empty...skipping SSHFS step"))}
+
+# list packages to load
+packages <- c("conflicted", "here", "magrittr", "mgcv", "gratia", "lme4", "lmerTest", "invgamma", "longCombat", "ciftiTools", "readxl", "dplyr", "data.table", "DescTools","tableone", "tibble", "reshape2", "viridis", "scico", "ggplot2", "gridExtra", "ggpubr")
+
+# install packages if not yet installed
+all_packages <- rownames(installed.packages())
+installed_packages <- packages %in% all_packages
+if (any(installed_packages == FALSE)){install.packages(packages[!installed_packages])}
+
+# load packages
+invisible(lapply(packages, library, character.only = TRUE))
+
+# use the filter function from dplyr, not stats
+conflict_prefer("filter", "dplyr")
+
+# get path to project repo directory
+project <- here()
+print(paste("Project directory:", project))
+
+# set up connectome workbench path for ciftiTools
+# https://www.humanconnectome.org/software/get-connectome-workbench
+# local wbpath (edit this path if workbench is installed in another location, e.g. on hoffman: /u/project/CCN/apps/hcp/current/workbench/bin_rh_linux64/)
+# TODO: edit if necessary
+wbpath <- "/Applications/workbench/bin_macosx64/"
+ciftiTools.setOption("wb_path", wbpath)
+
+# load rgl for ciftiTools visualization
+# may require XQartz v2.8.1 to be installed locally
+if(!require('rgl', quietly=TRUE)){install.packages('rgl')}
+rgl::setupKnitr()
+rgl::rgl.open(); rgl::rgl.close()
+```
+
+## load CAB-NP atlas
+RSN atlas of whole cortex and subcortex to use for thalamus striatum connectivity analysis. Atlas can be downloaded here: https://github.com/ColeLab/ColeAnticevicNetPartition
+load key for Ji parcels/networks
+```{r message=FALSE,include=FALSE,warning=FALSE}
+ji_key <- read.table(file.path(project,"CAB-NP/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_parcels_LR_LabelKey.txt"),header=T)
+ji_net_keys <- ji_key[,c("NETWORKKEY","NETWORK")] %>% distinct %>% arrange(NETWORKKEY)
+print(ji_net_keys)
+
+# read cifti with subcortical structures labeled 
+xii_Ji_parcel <- read_cifti(file.path(project,"CAB-NP/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_parcels_LR.dscalar.nii"), brainstructures = "all")
+xii_Ji_network <- read_cifti(file.path(project,"CAB-NP/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_netassignments_LR.dscalar.nii"), brainstructures = "all")
+
+#view_xifti_volume(xii_Ji_parcel,colors="viridis",title="parcels",cex.title=1.3)
+#view_xifti_volume(xii_Ji_network,colors="Paired",title="networks",cex.title=1.3)
+```
+
+## Load individual TC connectivity CSVs
+computed by 22q_multisite_networkTC_save_individual.R and saved as a CSV with one value per network representing the z-transformed pearson correlation between signals in the thalamic and cortical subsets of that network
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# paths to sessions directories
+trio_dir <- file.path(hoffman,"22q/qunex_studyfolder/sessions")
+prisma_dir <- file.path(hoffman,"22qPrisma/qunex_studyfolder/sessions")
+suny_dir <- file.path(hoffman,"Enigma/SUNY/qunex_studyfolder/sessions")
+rome_dir <- file.path(hoffman,"Enigma/Rome/qunex_studyfolder/sessions")
+iop_dir <- file.path(hoffman,"Enigma/IoP/qunex_studyfolder/sessions")
+
+# get list of sessions
+trio_sessions <- list.files(trio_dir,pattern="Q_[0-9]")
+prisma_sessions <- list.files(prisma_dir,pattern="Q_[0-9]")
+# exclude Q_0390_09302019 for now due to no AP BOLD
+exclude_sessions <- "Q_0390_09302019"
+prisma_sessions <- prisma_sessions[! prisma_sessions %in% exclude_sessions]
+suny_sessions <- list.files(suny_dir,pattern="X[0-9]")
+iop_sessions <- list.files(iop_dir,pattern="GQAIMS[0-9]")
+rome_sessions <- c(list.files(rome_dir, pattern="C[0-9]"),list.files(rome_dir, pattern="D[0-9]"))
+
+all_sessions <- c(trio_sessions,prisma_sessions,suny_sessions,rome_sessions,iop_sessions)
+
+
+# function to read thalamocortical results and add columns for roi pair name, site, and ID 
+read_tc_results <- function(sdir, fname, sesh, site){
+  input <- read.csv(file.path(sdir,sesh,"images/functional",fname))
+  session <- rep(sesh, times=nrow(input)) %>% as.data.frame
+  site <- rep(site, times=nrow(input)) %>% as.data.frame
+  new_cols <- cbind(session,site)
+  colnames(new_cols) <- c("MRI_S_ID","site")
+  output <- cbind(input,new_cols)
+  return(output)
+}
+
+# file name to look for
+tc_name_trio <- "resting_fc_network_Thal_Cortex_Atlas_s_hpss_res-mVWMWB1d_lpss_CABNP.csv"
+tc_name_prisma <- "restingAP_fc_network_Thal_Cortex_Atlas_s_hpss_res-mVWMWB1d_lpss_CABNP.csv"
+
+# read results for each site
+trio_tc <- lapply(trio_sessions, function(s) read_tc_results(sesh=s,site="trio",sdir=trio_dir,fname=tc_name_trio)) %>% do.call(rbind,.) %>% as.data.frame
+prisma_tc <- lapply(prisma_sessions, function(s) read_tc_results(sesh=s,site="prisma",sdir=prisma_dir,fname=tc_name_prisma)) %>% do.call(rbind,.) %>% as.data.frame
+suny_tc <- lapply(suny_sessions, function(s) read_tc_results(sesh=s,site="suny",sdir=suny_dir,fname=tc_name_trio)) %>% do.call(rbind,.) %>% as.data.frame
+rome_tc <- lapply(rome_sessions, function(s) read_tc_results(sesh=s,site="rome",sdir=rome_dir,fname=tc_name_trio)) %>% do.call(rbind,.) %>% as.data.frame
+iop_tc <- lapply(iop_sessions, function(s) read_tc_results(sesh=s,site="iop",sdir=iop_dir,fname=tc_name_trio)) %>% do.call(rbind,.) %>% as.data.frame
+
+# combine all
+all_tc <- rbind(trio_tc, prisma_tc, suny_tc, rome_tc, iop_tc)
+all_tc$site <- factor(all_tc$site, levels=c("trio","prisma","suny","iop","rome"))
+
+# read multisite demo table created for f31
+demo_multisite <- read.csv("~/Dropbox/PhD/grants/NIMH_f31_2022/scripts/22q_multisite_demo_f31.csv")
+
+# merge TCC with demographics
+all_tc_demo <- merge(x=all_tc, y=demo_multisite, by="MRI_S_ID", all.x=TRUE)
+
+```
+
+plot TCC distributions by site for SOM and FPN
+```{r}
+
+ggplot(filter(all_tc, NETWORK=="Somatomotor" ), aes(TC_Fz, fill=site, y=..count..))+
+  geom_density(kernel="gaussian", alpha=0.7)+
+  #scale_fill_manual(values=c("lightblue","red"))+
+  theme_classic()+
+  ggtitle("Somatomotor TCC")
+
+ggplot(filter(all_tc, NETWORK=="Frontoparietal" ), aes(TC_Fz, fill=site, y=..count..))+
+  geom_density(kernel="gaussian", alpha=0.7)+
+  #scale_fill_manual(values=c("lightblue","red"))+
+  theme_classic()+
+  ggtitle("Frontoparietal TCC")
+
+
+ggplot(filter(all_tc_demo, NETWORK=="Somatomotor" & SUBJECT_IDENTITY =="PATIENT-DEL"), aes(TC_Fz, fill=site, y=..count..))+
+  geom_density(kernel="gaussian", alpha=0.7)+
+  #scale_fill_manual(values=c("lightblue","red"))+
+  theme_classic()+
+  ggtitle("Somatomotor TCC, 22qDel only")
+
+ggplot(filter(all_tc_demo, NETWORK=="Frontoparietal" & SUBJECT_IDENTITY =="PATIENT-DEL" ), aes(TC_Fz, fill=site, y=..count..))+
+  geom_density(kernel="gaussian", alpha=0.7)+
+  #scale_fill_manual(values=c("lightblue","red"))+
+  theme_classic()+
+  ggtitle("Frontoparietal TCC, 22qDel only")
+```
+
+## load sistat data and get lists of scans to use
+all sistat tables should be exported as CSVs into a single directory
+the next several chunks deal with reading, cleaning and annotating the data exported from sistat, and then age matching
+the hcs sample is younger than del due to a large amount of very young hcs subjects. plan is to match samples by using followup timepoints rather than baseline for some younger participants, and dropping several older del subjects, and younger hcs subjects (prioritizing dropping subjects with worse motion stats when possible)
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# set location of directory with ucla sistat CSVs
+csvdir_ucla <- file.path(project,"demographics/ucla_sistat")
+
+# get list of files_ucla in directory
+files_ucla <- list.files(csvdir_ucla)
+fpaths <- lapply(files_ucla, function(file) paste(csvdir_ucla,file,sep="/"))
+
+# clean names
+fnames <- gsub(".csv","",files_ucla)
+fnames <- gsub("Re22Q_","",fnames)
+fnames <- gsub("Form_","",fnames)
+fnames <- gsub("Qry_","",fnames)
+
+# read all, set to na: "-9999", "-9998","." 
+input_all_ucla <- lapply(fpaths, read.csv, header=T, na.strings=c(".","-9999","-9998"), strip.white=T, sep=",")
+names(input_all_ucla) <- fnames
+df_all_ucla <- lapply(input_all_ucla, function(x) data.frame(x))
+
+# subset demo_mri for used scans
+ucla_demo <- df_all_ucla$demo_mri %>% filter(MRI_S_ID %in% all_sessions)
+
+# remove "FAMILY MEMBER" designation from subject identity
+ucla_demo$SUBJECT_IDENTITY <- ucla_demo$SUBJECT_IDENTITY %>% sub("FAMILY MEMBER","",.) %>% sub(",","",.) %>% trimws(which="both") %>% as.factor
+# change sex coding from 0/1 to F/M and set to factor
+ucla_demo$SEX <- factor(ucla_demo$SEX,levels=c(0,1),labels=c("F","M"))
+
+# manually fix missing sex for Q_0381_09102019
+# TODO: fix in sistat and re-export
+ucla_demo[which(ucla_demo$MRI_S_ID == "Q_0381_09102019"),"SEX"] <- "F"
+
+# set race=NA to 7 (unknown)
+ucla_demo$RACE[is.na(ucla_demo$RACE)] <- 7
+# set race as factor 1=American Indian/Alaska Native; 2=Asian; 3=Native Hawaiian/Pacific Islander; 4=Black or African American; 5=White; 6=Multiple; 7=Unknown
+ucla_demo$RACE <- factor(ucla_demo$RACE,levels=c(1:7),labels=c("1_Native_American","2_Asian","3_Pacific_Island","4_Black","5_White","6_Multiple","7_Unknown"))
+# ethnicity as factor with 0=N 1=Y
+ucla_demo$HISPANIC[is.na(ucla_demo$HISPANIC)] <- "Unknown"
+ucla_demo$HISPANIC <- factor(ucla_demo$HISPANIC,levels=c(0,1,"Unknown"),labels=c("N","Y","Unknown"))
+# get more accurate age with AGEMONTH/12
+ucla_demo$AGE <- as.numeric(ucla_demo$AGEMONTH)/12 
+
+# function to add column to code timepoints relative to sample used (i.e. if visit 1 and 1.12 missing, then 1.24 is baseline)
+# trio/prisma coded as T/P-visit_n where T-1 would be the subject's first trio scan and P-1 the first prisma, P-2 the second...
+# function should be applied to the indicies of rows (r) in a subset of demo_mri
+gettp <- function(r, df){
+  sub <- df$SUBJECTID[[r]]
+  visit <- df$CONVERTEDVISITNUM[[r]]
+  all_visits <- df$CONVERTEDVISITNUM[which(df$SUBJECTID == sub)] %>% sort
+  n_visits <- length(all_visits)
+  nt_visits <-length(which(all_visits < 2))
+  np_visits <- length(which(all_visits >= 2))
+  visit_index <- which(all_visits == visit)
+  if (visit < 2){
+    label=paste("T-",visit_index,sep="")
+  }else if (visit >= 2){
+    p_visits <- all_visits[which(all_visits >= 2)] %>% sort
+    p_visit_index <- which(p_visits == visit)
+    label=paste("P-",p_visit_index,sep="")
+  }
+  return(c(sub,visit,label,n_visits,nt_visits,np_visits,visit_index))
+}
+
+# get timepoints
+timepoints <- sapply(1:nrow(ucla_demo),function(r) gettp(r,ucla_demo)) %>% t %>% as.data.frame
+colnames(timepoints) <- c("SUBJECTID","CONVERTEDVISITNUM","converted_timepoint","n_timepoints","n_trio","n_prisma","visit_index")
+ucla_demo_tp <- cbind(ucla_demo,timepoints[,3:7])
+ucla_demo_tp$visit_index %<>% as.factor
+
+# add ASD dx
+get_asd <- function(subject, summ_psych){
+  asd_all <- filter(summ_psych, summ_psych$SUBJECTID==subject)$ASDDIAGNOS
+  # check if any visit coded as 1 (meaning asd=yes)
+  asd_yn <- 1 %in% asd_all
+  return(asd_yn)
+}
+
+# add ASD column based on summPsych
+ucla_demo_tp$summPsych_ASD  <- lapply(1:nrow(ucla_demo_tp), function(r) get_asd(subject=ucla_demo_tp[r,"SUBJECTID"], summ_psych=df_all_ucla$summPsych)) %>% do.call(rbind,.) %>% factor(.,levels=c(TRUE,FALSE), labels=c("Y","N"))
+
+# subset to hcs del
+ucla_demo_hcs_del <- ucla_demo_tp %>% filter(SUBJECT_IDENTITY=="CONTROL" | SUBJECT_IDENTITY =="PATIENT-DEL")
+
+# remove unused factor levels
+ucla_demo_hcs_del %<>% droplevels
+```
+
+# SRS
+get measure
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# get srs data (TOTRAW)
+df_srs <- df_all_ucla$SRS[,c("SUBJECTID","CONVERTEDVISITNUM","TOTRAW")] %>% rename("SRS_TOTRAW" = "TOTRAW")
+
+# merge with demo
+ucla_demo_hcs_del <- merge(x=ucla_demo_hcs_del, y=df_srs, by=c("SUBJECTID","CONVERTEDVISITNUM"))
+
+# merge demo with all_tc
+ucla_demo_hcs_del_tc <- merge(x=ucla_demo_hcs_del, y=all_tc, by="MRI_S_ID")
+ucla_demo_hcs_del_tc
+```
+
+plot srs vs somatomotor
+```{r}
+ggplot(filter(ucla_demo_hcs_del_tc, NETWORK=="Somatomotor" & SUBJECT_IDENTITY=="PATIENT-DEL"), aes(x=SRS_TOTRAW, y=TC_Fz))+
+  geom_point()+ 
+  geom_smooth(method=lm, color="red", se=TRUE)+
+  facet_wrap(~site)+
+  ggtitle("SRS TOTAL by site, 22qDel only")
+  
+```
+
+```{r}
+# linear mixed model for interaction between srs total raw score and site
+som_srs_lmm <- lmerTest::lmer("TC_Fz ~ SRS_TOTRAW * site + (1|SUBJECTID)", REML = TRUE, data = filter(ucla_demo_hcs_del_tc, NETWORK=="Somatomotor" & SUBJECT_IDENTITY=="PATIENT-DEL")) %>% summary
+print(som_srs_lmm)
+```
+
+permutation test for srstot*site interaction
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# function to randomly shuffle site
+shuffle_site <- function(df,i){
+  print(i)
+  out <- df
+  out$site <- sample(out$site)
+  return(out)
+}
+# compute 1000 permutations of the interaction effect with shuffled site labels
+nperm <- 1000
+som_srs_lmm_p1000 <- lapply(1:nperm, function(i) summary(lmerTest::lmer("TC_Fz ~ SRS_TOTRAW * site + (1|SUBJECTID)", REML = TRUE, data = shuffle_site(filter(ucla_demo_hcs_del_tc, NETWORK=="Somatomotor" & SUBJECT_IDENTITY=="PATIENT-DEL"),i=i)))$coefficients["SRS_TOTRAW:siteprisma","Estimate"]) %>% do.call(rbind,.) %>% as.data.frame
+
+# get fraction of permuted betas with absolute value greater than absolute value of true test statistic
+som_srs_lmm_beta <- som_srs_lmm$coefficients["SRS_TOTRAW:siteprisma","Estimate"]
+pperm <- sum(abs(som_srs_lmm_p1000$V1) > abs(som_srs_lmm_beta))/nperm
+
+```
+
+
+try adding covariates into the model
+```{r}
+# add more demo variables (e.g. asd status)
+ucla_demo_hcs_del_tc <- merge(x=ucla_demo_hcs_del_tc, y=demo_multisite[,c("MRI_S_ID","IQ_full")])
+ucla_demo_hcs_del_tc$AGESQ <- ucla_demo_hcs_del_tc$AGE^2
+
+# linear mixed model for interaction between srs total raw score and site
+som_srs_lmm_c <- lmerTest::lmer("TC_Fz ~ AGE + AGESQ + SEX + IQ_full + SRS_TOTRAW * site + (1|SUBJECTID)", REML = TRUE, data = filter(ucla_demo_hcs_del_tc, NETWORK=="Somatomotor" & SUBJECT_IDENTITY=="PATIENT-DEL")) %>% summary
+print(som_srs_lmm_c)
+```
+
+trio vs prisma demographics
+```{r}
+# get only sessions with srs score 
+ucla_demo_hcs_del_srs <- ucla_demo_hcs_del[!is.na(ucla_demo_hcs_del$SRS_TOTRAW),]
+
+# add site
+ucla_demo_hcs_del_srs <- merge(x=ucla_demo_hcs_del_srs, y=demo_multisite[,c("MRI_S_ID","Site","IQ_full")], by="MRI_S_ID")
+
+
+# demo table
+demo_summary <- CreateTableOne(data=ucla_demo_hcs_del_srs,vars=c("AGE","SEX","SUBJECT_IDENTITY","IQ_full","summPsych_ASD"),strata="Site",addOverall=FALSE)
+print("ALL SUBJECTS WITH SRS SCORES")
+print(demo_summary, showAllLevels=TRUE)
+
+demo_summary_del <- CreateTableOne(data=filter(ucla_demo_hcs_del_srs, SUBJECT_IDENTITY=="PATIENT-DEL"),vars=c("AGE","SEX","IQ_full","summPsych_ASD"),strata="Site",addOverall=FALSE)
+
+print("22QDEL ONLY")
+print(demo_summary_del, showAllLevels=TRUE)
+```
+
