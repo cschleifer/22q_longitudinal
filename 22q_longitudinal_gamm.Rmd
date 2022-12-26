@@ -88,13 +88,17 @@ trio_sessions <- list.files(trio_dir,pattern="Q_[0-9]")
 prisma_sessions <- list.files(prisma_dir,pattern="Q_[0-9]")
 # exclude Q_0390_09302019 for now due to no AP BOLD; test excluding "Q_0321_03272017","Q_0334_12012016" to ensure restingAP* vs resting* prisma are the same
 #exclude_sessions <- c("Q_0390_09302019","Q_0321_03272017","Q_0334_12012016")
-exclude_sessions <- c("Q_0390_09302019","Q_0477_01052022","Q_0484_01042022","Q_0508_06232022","Q_0519_05312022","Q_0520_06012022","Q_0521_05202022","Q_0525_06072022","Q_0526_06242022","Q_0527_07112022","Q_0528_07202022","Q_0529_07202022","Q_0541_07182022","Q_0549_10182022","Q_0561_11032022","Q_0568_10252022")
+#exclude_sessions <- c("Q_0390_09302019","Q_0477_01052022","Q_0484_01042022","Q_0508_06232022","Q_0519_05312022","Q_0520_06012022","Q_0521_05202022","Q_0525_06072022","Q_0526_06242022","Q_0527_07112022","Q_0528_07202022","Q_0529_07202022","Q_0541_07182022","Q_0549_10182022","Q_0561_11032022","Q_0568_10252022")
+
+# exclude only Q_0390_09302019 (missing AP BOLD)
+exclude_sessions <- "Q_0390_09302019"
 prisma_sessions <- prisma_sessions[! prisma_sessions %in% exclude_sessions]
 all_sessions <- c(trio_sessions,prisma_sessions)
 
 
 # function to read thalamocortical results and add columns for roi pair name, site, and ID 
 read_tc_results <- function(sdir, fname, sesh, site){
+  print(sesh)
   input <- read.csv(file.path(sdir,sesh,"images/functional",fname))
   session <- rep(sesh, times=nrow(input)) %>% as.data.frame
   site <- rep(site, times=nrow(input)) %>% as.data.frame
